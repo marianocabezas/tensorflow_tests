@@ -90,3 +90,6 @@ ENV/
 
 # pyCharm
 .idea/
+
+# MNIST data
+MNIST*/
