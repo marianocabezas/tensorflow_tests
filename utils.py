@@ -1,3 +1,5 @@
+from __future__ import print_function
+import sys
 import numpy as np
 from math import floor
 from scipy import ndimage as nd
@@ -20,6 +22,63 @@ def color_codes():
         'lgy': '\033[37m',
     }
     return codes
+
+
+def print_headers(train_losses, train_accs, val_losses, val_accs):
+    print(''.join([' '] * 9), end='\t')
+    for (k, _) in train_losses.iteritems():
+        print(k, end='\t')
+    for (k, _) in train_accs.iteritems():
+        print(k, end='\t')
+    for (k, _) in val_losses.iteritems():
+        print(k, end='\t')
+    for (k, _) in val_accs.iteritems():
+        print(k, end='\t')
+    print()
+
+
+def print_metrics(i, train_losses, train_accs, val_losses, val_accs, time):
+    def print_metric(i, metric, color, min):
+        assert isinstance(metric, list), '%r is not a tuple (optimum, current, best_i)' % metric
+        assert isinstance(color, basestring), '%r is not a formatting string' % color
+        is_better = metric[1] < metric[0] if min else metric[1] > metric[0]
+        metric_s = '%f' % metric[1]
+        if is_better:
+            metric[0] = metric[1]
+            metric[2] = i
+            metric_s = color + metric_s + color_codes()['nc']
+        print(metric_s, end='\t')
+        return is_better
+
+    c = color_codes()
+
+    # Structure of losses/acc:
+    # 'name': (min/max, current, best_i)
+    metrics = zip(
+        sorted(train_losses.iteritems()),
+        sorted(train_accs.iteritems()),
+        sorted(val_losses.iteritems()),
+        sorted(val_accs.iteritems())
+    )
+    print(''.join([' ']*130), end='\r')
+    sys.stdout.flush()
+    print('Epoch %03d' % i, end='\t')
+    for ((k_tl, v_tl), (k_ta, v_ta), (k_vl, v_vl), (k_va, v_va)) in metrics:
+        print_metric(i, v_tl, c['c'], True)
+        print_metric(i, v_ta, c['c'], False)
+        better = print_metric(i, v_vl, c['g'], True)
+        print_metric(i, v_va, c['g'], False)
+        print('%fs' % time)
+
+    return better
+
+
+def print_current(epoch, step, n_batches, curr_values):
+    percent = 20 * step / n_batches
+    bar = '[' + ''.join([' '] * percent) + '>' + ''.join(['-'] * (20 - percent)) + ']'
+    curr_values_s = ' train_loss %f (%f) train_acc %f (%f)' % curr_values
+    print('Epoch %03d\t(%d/%d) ' % (epoch, step, n_batches) + bar + curr_values_s, end='\r')
+    sys.stdout.flush()
 
 
 def train_test_split(data, labels, test_size=0.1, random_state=42):
