@@ -1,4 +1,5 @@
 from operator import mul
+import sys
 import itertools
 import tensorflow as tf
 import numpy as np
@@ -14,6 +15,28 @@ def bias_variable(shape):
     return tf.Variable(initial)
 
 
+def layer_from_dicts(layer_dict, params_dict):
+    class_name = layer_dict.pop('class')
+    W_name = layer_dict.pop('W') if 'W' in layer_dict else None
+    b_name = layer_dict.pop('b') if 'b' in layer_dict else None
+    layer = getattr(sys.modules[__name__], class_name)(**layer_dict)
+    layer.W = params_dict[W_name] if W_name is not None else None
+    layer.b = params_dict[b_name] if b_name is not None else None
+
+    return layer
+
+
+class Tensor(object):
+
+    counter = itertools.count()
+
+    def __init__(self, node, input, output):
+        self.input = input
+        self.output = output
+        self.node = node
+        self.name = 'Input%d.T' % Tensor.counter.next() if self.node is None else node.name + '.T'
+
+
 class Layer(object):
     activations = {
         'relu': tf.nn.relu
@@ -22,23 +45,18 @@ class Layer(object):
     @staticmethod
     def _weight_variable(shape):
         initial = tf.truncated_normal(shape, stddev=0.1)
-        return tf.Variable(initial)
+        return tf.Variable(initial_value=initial, name='Weights')
 
     @staticmethod
     def _bias_variable(shape):
         initial = tf.constant(0.1, shape=shape)
-        return tf.Variable(initial)
+        return tf.Variable(initial_value=initial, name='Bias')
 
-    def __init__(self, layer=None, name='layer'):
+    def __init__(self, name='layer'):
         self.name = name
-        self.output = None
         self.trainable = True
-        if layer is None:
-            self.W = None
-            self.b = None
-        else:
-            self.W = layer.W
-            self.b = layer.b
+        self.W = None
+        self.b = None
 
     def get_trainable_parameters(self):
         parameters = list()
@@ -61,14 +79,11 @@ class Layer(object):
     def count_nontrainable_parameters(self):
         return 0
 
-    def get_name(self):
-        return self.name
-
     def set_trainable(self, trainable):
         self.trainable = trainable
 
-    def get_output(self):
-        return self.output
+    def get_config(self):
+        return {'layer': None, 'name': self.name}
 
     def print_info(self):
         weights_s = 'weights %r, ' % repr(self.W) if self.W is not None else 'no weights, '
@@ -76,27 +91,27 @@ class Layer(object):
         print('%s: %s%s' % (self.name, weights_s, bias_s))
 
 
-class Input(Layer):
-
-    counter = itertools.count()
-
-    def __init__(self, shape, name=None):
-        if name is None:
-            name = 'input%02d' % Input.counter.next()
-        super(Input, self).__init__(name=name)
-        self.output = tf.placeholder(tf.float32, [None] + shape)
+def Input(shape):
+    return Tensor(None, None, tf.placeholder(tf.float32, [None] + shape))
 
 
 class Reshape(Layer):
 
     counter = itertools.count()
 
-    def __init__(self, x, shape, name=None):
+    def __init__(self, shape, name=None):
         if name is None:
             name = 'reshape%02d' % Reshape.counter.next()
         super(Reshape, self).__init__(name=name)
-        self.input = x
-        self.output = tf.reshape(x.output, shape)
+        self.shape = shape
+
+    def __call__(self, x):
+        return Tensor(self, x, tf.reshape(x.output, self.shape))
+
+    def get_config(self):
+        return {
+            'class': self.__class__.__name__,
+            'shape': self.shape}
 
 
 class Conv(Layer):
@@ -105,11 +120,9 @@ class Conv(Layer):
 
     def __init__(
             self,
-            x,
             filters,
             kernel_size,
             strides=None,
-            layer=None,
             padding='SAME',
             activation=None,
             name=None
@@ -117,154 +130,128 @@ class Conv(Layer):
         assert 0 < len(kernel_size) < 4, 'The kernel size is not supported: %r' % repr(kernel_size)
         if name is None:
             name = 'conv%02d' % Conv.counter.next()
-        self.input = x
-        input_shape = self.input.output.get_shape().as_list()
-        rank = len(kernel_size)
-        if layer is None:
-            super(Conv, self).__init__(name=name)
-            self.W = Layer._weight_variable(list(kernel_size) + input_shape[-1:] + [filters])
-            self.b = Layer._bias_variable([filters])
-            self.kernel_size = kernel_size
-            if strides is None:
-                strides = [1] * rank
-            self.strides = [1] + strides + [1]
-            self.padding = padding
-        else:
-            super(Conv, self).__init__(layer=layer, name=name)
-            self.kernel_size = layer.kernel_size
-            self.strides = layer.strides
-            self.padding = layer.padding
+        super(Conv, self).__init__(name=name)
+        self.kernel_size = kernel_size
+        self.rank = len(self.kernel_size)
+        self.filters = filters
+        if strides is None:
+            strides = [1] * self.rank
+        self.strides = [1] + strides + [1]
+        self.padding = padding
+        self.activation = activation
+
+    def __call__(self, x):
+        input_shape = x.output.get_shape().as_list()
+        if self.W is None:
+            self.W = Layer._weight_variable(list(self.kernel_size) + input_shape[-1:] + [self.filters])
+        if self.b is None:
+            self.b = Layer._bias_variable([self.filters])
         conv_f = [tf.nn.conv1d, tf.nn.conv2d, tf.nn.conv3d]
-        conv = conv_f[rank-1](self.input.output, self.W, strides=self.strides, padding=self.padding) + self.b
-        if activation is not None:
-            conv = Layer.activations[activation](conv)
-        self.output = conv
+        conv = conv_f[self.rank-1](x.output, self.W, strides=self.strides, padding=self.padding) + self.b
+        if self.activation is not None:
+            conv = Layer.activations[self.activation](conv)
+        return Tensor(self, x, conv)
+
+    def get_config(self):
+        config = {
+            'class': self.__class__.__name__,
+            'filters': self.filters,
+            'kernel_size': self.kernel_size,
+            'strides': self.strides[1:-1],
+            'padding': self.padding,
+            'activation': self.activation,
+            'name': self.name
+        }
+        return config
 
 
 class MaxPool(Layer):
 
     counter = itertools.count()
 
-    def __init__(self, x, pool_size=None, padding='SAME', name=None):
+    def __init__(self, pool_size, padding='SAME', name=None):
         if name is None:
             name = 'max_pool%02d' % MaxPool.counter.next()
         super(MaxPool, self).__init__(name=name)
-        self.input = x
-        rank = len(self.input.output.get_shape().as_list()) - 2
-        if pool_size is None:
-            pool_size = [2] * rank
+        self.pool_size = pool_size
         self.kernel_size = [1] + list(pool_size) + [1]
         self.strides = [1] + list(pool_size) + [1]
         self.padding = padding
-        self.output = tf.nn.max_pool(
-            self.input.output,
+
+    def __call__(self, x):
+        return Tensor(self, x, tf.nn.max_pool(
+            x.output,
             ksize=self.kernel_size,
             strides=self.strides,
             padding=self.padding
-        )
+        ))
+
+    def get_config(self):
+        config = {
+            'class': self.__class__.__name__,
+            'pool_size': self.pool_size,
+            'padding': self.padding,
+            'name': self.name
+        }
+        return config
 
 
 class Dense(Layer):
 
     counter = itertools.count()
 
-    def __init__(self, x, units, activation=None, name=None):
+    def __init__(self, units, activation=None, name=None):
         if name is None:
             name = 'dense%02d' % Dense.counter.next()
         super(Dense, self).__init__(name=name)
-        self.input = x
-        input_shape = self.input.output.get_shape().as_list()
-        self.W = Layer._weight_variable([reduce(mul, input_shape[1:]), units])
-        self.b = Layer._bias_variable([units])
-        x_flat = tf.reshape(self.input.output, [-1, reduce(mul, input_shape[1:])])
+        self.units = units
+        self.activation = activation
+
+    def __call__(self, x):
+        input_shape = x.output.get_shape().as_list()
+        if self.W is None:
+            self.W = Layer._weight_variable([reduce(mul, input_shape[1:]), self.units])
+        if self.b is None:
+            self.b = Layer._bias_variable([self.units])
+        x_flat = tf.reshape(x.output, [-1, reduce(mul, input_shape[1:])])
         fc = tf.nn.relu(tf.matmul(x_flat, self.W) + self.b)
-        if activation is not None:
-            fc = Layer.activations[activation](fc)
-        self.output = fc
+        if self.activation is not None:
+            fc = Layer.activations[self.activation](fc)
+        return Tensor(self, x, fc)
+
+    def get_config(self):
+        config = {
+            'class': self.__class__.__name__,
+            'units': self.units,
+            'activation': self.activation,
+            'name': self.name
+        }
+        return config
 
 
 class Dropout(Layer):
 
     counter = itertools.count()
 
-    def __init__(self, x, rate, seed=None, name=None):
+    def __init__(self, rate, seed=None, name=None):
         if name is None:
             name = 'drop%02d' % Dropout.counter.next()
         super(Dropout, self).__init__(name=name)
-        self.input = x
-        retain_prob = 1. - rate
+        self.rate = rate
         if seed is None:
             seed = np.random.randint(10000)
-        self.output = tf.nn.dropout(self.input.output * 1., retain_prob, seed=seed)
+        self.seed = seed
 
+    def __call__(self, x):
+        self.input = x
+        retain_prob = 1. - self.rate
+        return Tensor(self, x, tf.nn.dropout(self.input.output * 1., retain_prob, seed=self.seed))
 
-def input_layer(shape):
-    input_l = tf.placeholder(tf.float32, [None] + shape)
-    return input_l
-
-
-def conv(x, filters, kernel_size, strides, padding='SAME', activation=None):
-    assert 0 < len(kernel_size) < 4, 'The kernel size is not supported: %r' % repr(kernel_size)
-    conv_f = [conv1d, conv2d, conv3d]
-    return conv_f[len(kernel_size)-1](x, filters, kernel_size, strides, padding, activation)
-
-
-def conv1d(x,  filters, kernel_size=(3,), strides=list([1,]), padding='SAME', activation=None):
-    W_conv = weight_variable(list(kernel_size) + x.get_shape().as_list()[-1:] + [filters])
-    b_conv = bias_variable([filters])
-    strides = [1] + strides + [1]
-    conv = tf.nn.conv1d(x, W_conv, stride=strides, padding=padding) + b_conv
-    if activation is not None:
-        conv = Layer.activations[activation](conv)
-    return conv
-
-
-def conv2d(x, filters, kernel_size=(3, 3), strides=list([1, 1]), padding='SAME', activation=None):
-    W_conv = weight_variable(list(kernel_size) + x.get_shape().as_list()[-1:] + [filters])
-    b_conv = bias_variable([filters])
-    strides = [1] + strides + [1]
-    conv = tf.nn.conv2d(x, W_conv, strides=strides, padding=padding) + b_conv
-    if activation is not None:
-        conv = Layer.activations[activation](conv)
-    return conv
-
-
-def conv3d(x,  filters, kernel_size=(3, 3, 3), strides=list([1, 1, 1]), padding='SAME', activation=None):
-    W_conv = weight_variable(list(kernel_size) + x.get_shape().as_list()[-1:] + [filters])
-    b_conv = bias_variable([filters])
-    strides = [1] + strides + [1]
-    conv = tf.nn.conv3d(x, W_conv, strides=strides, padding=padding) + b_conv
-    if activation is not None:
-        conv = Layer.activations[activation](conv)
-    return conv
-
-
-def max_pool(x, pool_size, padding='SAME'):
-    kernel_size = [1] + list(pool_size) + [1]
-    strides = [1] + list(pool_size) + [1]
-    return tf.nn.max_pool(x, ksize=kernel_size, strides=strides, padding=padding)
-
-
-def max_pool_2d(x, pool_size=(2, 2), padding='SAME'):
-    return max_pool(x, pool_size, padding)
-
-
-def max_pool_3d(x, pool_size=(2, 2, 2), padding='SAME'):
-    return max_pool(x, pool_size, padding)
-
-
-def dense(x, units, activation=None):
-    W_fc = weight_variable([reduce(mul, x.get_shape().as_list()[1:]), units])
-    b_fc = bias_variable([units])
-    x_flat = tf.reshape(x, [-1, reduce(mul, x.get_shape().as_list()[1:])])
-    fc = tf.nn.relu(tf.matmul(x_flat, W_fc) + b_fc)
-    if activation is not None:
-        fc = Layer.activations[activation](fc)
-    return fc
-
-
-def dropout(x, rate, seed=None):
-    retain_prob = 1. - rate
-    if seed is None:
-        seed = np.random.randint(10e6)
-    return tf.nn.dropout(x * 1., retain_prob, seed=seed)
+    def get_config(self):
+        config = {
+            'class': self.__class__.__name__,
+            'rate': self.rate,
+            'seed': self.seed,
+            'name': self.name
+        }
+        return config
