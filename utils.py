@@ -1,8 +1,9 @@
 from __future__ import print_function
 import sys
-import numpy as np
 from math import floor
+import numpy as np
 from scipy import ndimage as nd
+import tensorflow as tf
 
 
 def color_codes():
@@ -62,6 +63,7 @@ def print_metrics(i, train_losses, train_accs, val_losses, val_accs, time):
     )
     print(''.join([' ']*130), end='\r')
     sys.stdout.flush()
+    better = None
     print('Epoch %03d' % i, end='\t')
     for ((k_tl, v_tl), (k_ta, v_ta), (k_vl, v_vl), (k_va, v_va)) in metrics:
         print_metric(i, v_tl, c['c'], True)

@@ -5,23 +5,9 @@ import tensorflow as tf
 import numpy as np
 
 
-def weight_variable(shape):
-    initial = tf.truncated_normal(shape, stddev=0.1)
-    return tf.Variable(initial)
-
-
-def bias_variable(shape):
-    initial = tf.constant(0.1, shape=shape)
-    return tf.Variable(initial)
-
-
-def layer_from_dicts(layer_dict, params_dict):
+def layer_from_dicts(layer_dict):
     class_name = layer_dict.pop('class')
-    W_name = layer_dict.pop('W') if 'W' in layer_dict else None
-    b_name = layer_dict.pop('b') if 'b' in layer_dict else None
     layer = getattr(sys.modules[__name__], class_name)(**layer_dict)
-    layer.W = params_dict[W_name] if W_name is not None else None
-    layer.b = params_dict[b_name] if b_name is not None else None
 
     return layer
 
@@ -43,14 +29,24 @@ class Layer(object):
     }
 
     @staticmethod
-    def _weight_variable(shape):
-        initial = tf.truncated_normal(shape, stddev=0.1)
-        return tf.Variable(initial_value=initial, name='Weights')
+    def _weight_variable(shape, scope='global'):
+        try:
+            with tf.variable_scope(scope):
+                var = tf.get_variable('Weights', shape=shape, initializer=tf.contrib.layers.xavier_initializer())
+        except ValueError:
+            with tf.variable_scope(scope, reuse=True):
+                var = tf.get_variable('Weights', shape=shape, initializer=tf.contrib.layers.xavier_initializer())
+        return var
 
     @staticmethod
-    def _bias_variable(shape):
-        initial = tf.constant(0.1, shape=shape)
-        return tf.Variable(initial_value=initial, name='Bias')
+    def _bias_variable(shape, scope='global'):
+        try:
+            with tf.variable_scope(scope):
+                var = tf.get_variable('Bias', shape=shape, initializer=tf.contrib.layers.xavier_initializer())
+        except ValueError:
+            with tf.variable_scope(scope, reuse=True):
+                var = tf.get_variable('Bias', shape=shape, initializer=tf.contrib.layers.xavier_initializer())
+        return var
 
     def __init__(self, name='layer'):
         self.name = name
@@ -111,7 +107,51 @@ class Reshape(Layer):
     def get_config(self):
         return {
             'class': self.__class__.__name__,
-            'shape': self.shape}
+            'shape': self.shape,
+            'name': self.name
+        }
+
+
+class Concatenate(Layer):
+
+    counter = itertools.count()
+
+    def __init__(self, axis=0, name=None):
+        if name is None:
+            name = 'concatenate%02d' % Reshape.counter.next()
+        super(Concatenate, self).__init__(name=name)
+        self.axis = axis
+
+    def __call__(self, x):
+        return Tensor(self, x, tf.concat(x, axis=self.axis))
+
+    def get_config(self):
+        return {
+            'class': self.__class__.__name__,
+            'axis': self.axis,
+            'name': self.name
+        }
+
+
+class Add(Layer):
+
+    counter = itertools.count()
+
+    def __init__(self, axis=0, name=None):
+        if name is None:
+            name = 'concatenate%02d' % Reshape.counter.next()
+        super(Add, self).__init__(name=name)
+        self.axis = axis
+
+    def __call__(self, x):
+        return Tensor(self, x, tf.add_n(x))
+
+    def get_config(self):
+        return {
+            'class': self.__class__.__name__,
+            'axis': self.axis,
+            'name': self.name
+        }
 
 
 class Conv(Layer):
@@ -123,7 +163,7 @@ class Conv(Layer):
             filters,
             kernel_size,
             strides=None,
-            padding='SAME',
+            padding='valid',
             activation=None,
             name=None
     ):
@@ -142,10 +182,9 @@ class Conv(Layer):
 
     def __call__(self, x):
         input_shape = x.output.get_shape().as_list()
-        if self.W is None:
-            self.W = Layer._weight_variable(list(self.kernel_size) + input_shape[-1:] + [self.filters])
-        if self.b is None:
-            self.b = Layer._bias_variable([self.filters])
+        weights_shape = list(self.kernel_size) + input_shape[-1:] + [self.filters]
+        self.W = Layer._weight_variable(shape=weights_shape, scope=self.name)
+        self.b = Layer._bias_variable([self.filters], scope=self.name)
         conv_f = [tf.nn.conv1d, tf.nn.conv2d, tf.nn.conv3d]
         conv = conv_f[self.rank-1](x.output, self.W, strides=self.strides, padding=self.padding) + self.b
         if self.activation is not None:
@@ -169,7 +208,7 @@ class MaxPool(Layer):
 
     counter = itertools.count()
 
-    def __init__(self, pool_size, padding='SAME', name=None):
+    def __init__(self, pool_size, padding='valid', name=None):
         if name is None:
             name = 'max_pool%02d' % MaxPool.counter.next()
         super(MaxPool, self).__init__(name=name)
@@ -209,10 +248,8 @@ class Dense(Layer):
 
     def __call__(self, x):
         input_shape = x.output.get_shape().as_list()
-        if self.W is None:
-            self.W = Layer._weight_variable([reduce(mul, input_shape[1:]), self.units])
-        if self.b is None:
-            self.b = Layer._bias_variable([self.units])
+        self.W = Layer._weight_variable([reduce(mul, input_shape[1:]), self.units], scope=self.name)
+        self.b = Layer._bias_variable([self.units], scope=self.name)
         x_flat = tf.reshape(x.output, [-1, reduce(mul, input_shape[1:])])
         fc = tf.nn.relu(tf.matmul(x_flat, self.W) + self.b)
         if self.activation is not None:

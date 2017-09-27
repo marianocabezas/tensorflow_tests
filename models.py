@@ -57,16 +57,17 @@ def save_model(model, filepath):
 def load_model(filepath):
     model_dict = dill.load(open(filepath, 'rb'))
     params = model_dict['params']
-    for k, v in params.items():
-        if 'Weights' in k:
-            var = Layer._weight_variable(v[0])
-        if 'Bias' in k:
-            var = Layer._bias_variable(v[0])
-        Model.session.run(var.assign(v[1]))
-        params.update({k: var})
     layers = model_dict['layers']
     for name, layer_dict in layers.items():
-        layer = layer_from_dicts(layer_dict, params)
+        W_name = layer_dict.pop('W') if 'W' in layer_dict else None
+        b_name = layer_dict.pop('b') if 'b' in layer_dict else None
+        layer = layer_from_dicts(layer_dict)
+        if W_name is not None:
+            layer.W = Layer._weight_variable(params[W_name][0], layer.name)
+            Model.session.run(layer.W.assign(params[W_name][1]))
+        if b_name is not None:
+            layer.W = Layer._bias_variable(params[b_name][0], layer.name)
+            Model.session.run(layer.W.assign(params[b_name][1]))
         layers.update({name: layer})
     tensor_dict = dict()
     for tensor in model_dict['tensors']:
@@ -105,6 +106,11 @@ class Model(object):
     config.gpu_options.allow_growth = True
     session = tf.Session(config=config)
 
+    @staticmethod
+    def initialise_vars():
+        uninit_vars = [var for var in tf.global_variables() if not Model.session.run(tf.is_variable_initialized(var))]
+        Model.session.run(tf.variables_initializer(uninit_vars))
+
     def __init__(self, inputs, outputs, optimizer, loss, metrics):
         # TODO: Multiple inputs/outputs
         # TODO: Checking if input is tensor if not create one for it
@@ -114,7 +120,7 @@ class Model(object):
         self.optimizer = optimizer
         self.metrics = metrics
         self.best_params = dict()
-        Model.session.run(tf.global_variables_initializer())
+        Model.initialise_vars()
 
     @property
     def layers(self):
@@ -128,6 +134,20 @@ class Model(object):
                 if tensor.node in layers:
                     layers.remove(tensor.node)
                 layers = [tensor.node] + layers
+        return layers
+
+    @property
+    def layers_dict(self):
+        tensor_list = self.outputs if isinstance(self.outputs, list) else [self.outputs]
+        layers = dict()
+        while tensor_list:
+            tensor = tensor_list.pop()
+            if tensor.input is not None:
+                tensor_list.append(tensor.input)
+            layer = tensor.node
+            if layer is not None:
+                if layer.name not in layers:
+                    layers.update({layer.name: layer})
         return layers
 
     def _update_best_params(self):
@@ -161,7 +181,6 @@ class Model(object):
         outputs = tf.placeholder(tf.float32, self.outputs.output.get_shape().as_list())
         loss = Model.metric_functions[self.loss](self.outputs.output, outputs)
         metrics = Model.metric_functions[self.metrics](self.outputs.output, outputs)
-        print(tf.trainable_variables())
         optimizer = Model.optimizers[self.optimizer].minimize(loss)
 
         n_batches = -(-len(tr_data) / batch_size)
@@ -175,7 +194,7 @@ class Model(object):
         t_start = time.time()
         no_improvement = 0
 
-        Model.session.run(tf.global_variables_initializer())
+        Model.initialise_vars()
         for i in range(epochs):
             idx = np.random.permutation(len(tr_data))
             x = tr_data[idx, :]
@@ -211,7 +230,7 @@ class Model(object):
         print('Training finished in %d epochs (%fs) with %s = %f (epoch %d)' %
               (i, t_end, monitor, metrics_dict[monitor][0], metrics_dict[monitor][2]))
         for k, v in self.best_params.items():
-            if self.layers[k].W is not None:
-                Model.session.run(self.layers[k].W.assign(v[0]))
-            if self.layers[k].b is not None:
-                Model.session.run(self.layers[k].b.assign(v[1]))
+            if self.layers_dict[k].W is not None:
+                Model.session.run(self.layers_dict[k].W.assign(v[0]))
+            if self.layers_dict[k].b is not None:
+                Model.session.run(self.layers_dict[k].b.assign(v[1]))
