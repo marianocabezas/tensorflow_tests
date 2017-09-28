@@ -25,7 +25,8 @@ class Tensor(object):
 
 class Layer(object):
     activations = {
-        'relu': tf.nn.relu
+        'relu': tf.nn.relu,
+        'softmax': tf.nn.softmax
     }
 
     @staticmethod

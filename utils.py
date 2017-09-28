@@ -26,7 +26,7 @@ def color_codes():
 
 
 def print_headers(train_losses, train_accs, val_losses, val_accs):
-    print(''.join([' '] * 9), end='\t')
+    print(''.join([' '] * 3), end='\t')
     for (k, _) in train_losses.iteritems():
         print(k, end='\t')
     for (k, _) in train_accs.iteritems():
@@ -64,7 +64,7 @@ def print_metrics(i, train_losses, train_accs, val_losses, val_accs, time):
     print(''.join([' ']*130), end='\r')
     sys.stdout.flush()
     better = None
-    print('Epoch %03d' % i, end='\t')
+    print('%03d' % i, end='\t')
     for ((k_tl, v_tl), (k_ta, v_ta), (k_vl, v_vl), (k_va, v_va)) in metrics:
         print_metric(i, v_tl, c['c'], True)
         print_metric(i, v_ta, c['c'], False)
@@ -79,7 +79,7 @@ def print_current(epoch, step, n_batches, curr_values):
     percent = 20 * step / n_batches
     bar = '[' + ''.join([' '] * percent) + '>' + ''.join(['-'] * (20 - percent)) + ']'
     curr_values_s = ' train_loss %f (%f) train_acc %f (%f)' % curr_values
-    print('Epoch %03d\t(%d/%d) ' % (epoch, step, n_batches) + bar + curr_values_s, end='\r')
+    print('%03d\t(%d/%d) ' % (epoch, step, n_batches) + bar + curr_values_s, end='\r')
     sys.stdout.flush()
 
 
@@ -90,20 +90,16 @@ def train_test_split(data, labels, test_size=0.1, random_state=42):
     # We create a random permutation of the data
     # First we permute the data indices, then we shuffle the data and labels
     np.random.seed(random_state)
-    indices = np.random.permutation(range(0, data.shape[0])).tolist()
-    np.random.seed(random_state)
-    shuffled_data = np.random.permutation(data)
-    np.random.seed(random_state)
-    shuffled_labels = np.random.permutation(labels)
+    indices = np.random.permutation(range(0, data.shape[0]))
+    shuffled_data = data[indices]
+    shuffled_labels = labels[indices]
 
     x_train = shuffled_data[:-n_test]
     x_test = shuffled_data[-n_test:]
     y_train = shuffled_labels[:-n_test]
     y_test = shuffled_data[-n_test:]
-    idx_train = indices[:-n_test]
-    idx_test = indices[-n_test:]
 
-    return x_train, x_test, y_train, y_test, idx_train, idx_test
+    return x_train, x_test, y_train, y_test
 
 
 def leave_one_out(data_list, labels_list):
