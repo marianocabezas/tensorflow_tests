@@ -102,6 +102,22 @@ def train_test_split(data, labels, test_size=0.1, random_state=42):
     return x_train, x_test, y_train, y_test
 
 
+def val_split(data, val_rate=0.1, random_state=42):
+    # Init (Set the random seed and determine the number of cases for test)
+    n_test = int(floor(data.shape[0]*val_rate))
+
+    # We create a random permutation of the data
+    # First we permute the data indices, then we shuffle the data and labels
+    np.random.seed(random_state)
+    indices = np.random.permutation(range(0, data.shape[0]))
+    shuffled_data = data[indices]
+
+    train_data = shuffled_data[:-n_test]
+    val_data = shuffled_data[-n_test:]
+
+    return train_data, val_data
+
+
 def leave_one_out(data_list, labels_list):
     for i in range(0, len(data_list)):
         yield data_list[:i] + data_list[i+1:], labels_list[:i] + labels_list[i+1:], i
@@ -144,3 +160,22 @@ def get_patient_info(p):
     patient_path = '/'.join(p[0].rsplit('/')[:-1])
 
     return p_name, patient_path
+
+
+def to_categorical(y, num_classes=None):
+    """Converts a class vector (integers) to binary class matrix.
+    E.g. for use with categorical_crossentropy.
+    # Arguments
+        y: class vector to be converted into a matrix
+            (integers from 0 to num_classes).
+        num_classes: total number of classes.
+    # Returns
+        A binary matrix representation of the input.
+    """
+    y = np.array(y, dtype='int').ravel()
+    if not num_classes:
+        num_classes = np.max(y) + 1
+    n = y.shape[0]
+    categorical = np.zeros((n, num_classes))
+    categorical[np.arange(n), y] = 1
+    return categorical

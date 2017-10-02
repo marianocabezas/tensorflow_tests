@@ -5,7 +5,7 @@ from itertools import chain
 import tensorflow as tf
 import numpy as np
 from layers import Input, Layer, layer_from_dicts
-from utils import print_headers, print_current, print_metrics, train_test_split
+from utils import print_headers, print_current, print_metrics, val_split
 import functions
 
 
@@ -101,13 +101,14 @@ class Model(object):
     # pass the tensorflow layer as "x"
     # I should also include possible adversarial metrics. That means rework metric functions
     #  to check if the variables are tensors or not. If they aren't create a tensor for it.
-    metric_functions = {
-        'categorical_crossentropy': functions.cross_entropy,
+    _metric_functions = {
+        'categorical_cross_entropy': functions.cross_entropy,
         'accuracy': functions.accuracy
     }
 
-    optimizers = {
-        'adam': tf.train.AdamOptimizer(1e-4)
+    _optimizers = {
+        'adam': tf.train.AdamOptimizer(1e-4),
+        'adadelta': tf.train.AdadeltaOptimizer(),
     }
 
     config = tf.ConfigProto()
@@ -155,7 +156,7 @@ class Model(object):
         return layers
 
     def iterate_tensor_graph(self, f):
-        tensor_list = self.outputs if isinstance(self.outputs, list) else [self.outputs]
+        tensor_list = [o for o in self.outputs] if isinstance(self.outputs, list) else [self.outputs]
         while tensor_list:
             tensor = tensor_list.pop()
             if tensor.input is not None:
@@ -177,6 +178,9 @@ class Model(object):
         for l in self.layers:
             parameters += l.count_trainable_parameters()
         return parameters
+
+    def save(self, filename):
+        save_model(self, filename)
 
     def fit(
             self,
@@ -204,11 +208,11 @@ class Model(object):
         tensor_outputs = [Model._to_tf_tensor(o_i) for o_i in model_outputs]
 
         # Metrics/loss creation and optimizer. We also initialize the new variables created.
-        loss_f = Model.metric_functions[self.loss]
+        loss_f = Model._metric_functions[self.loss]
         loss = tf.add_n([loss_f(o_i_a.output, o_i_gt) for o_i_a, o_i_gt in zip(model_outputs, tensor_outputs)])
-        metric_f = Model.metric_functions[self.metrics]
+        metric_f = Model._metric_functions[self.metrics]
         metrics = tf.add_n([metric_f(o_i_a.output, o_i_gt) for o_i_a, o_i_gt in zip(model_outputs, tensor_outputs)])
-        optimizer = Model.optimizers[self.optimizer].minimize(loss)
+        optimizer = Model._optimizers[self.optimizer].minimize(loss)
         Model.initialise_vars()
 
         # Metrics/loss stuff for monitoring
@@ -223,21 +227,19 @@ class Model(object):
         tr_data = tr_data if isinstance(tr_data, list) else [tr_data]
         tr_labels = tr_labels if isinstance(tr_labels, list) else [tr_labels]
         if val_data is None:
-            tr_x, tr_y, val_x, val_y = [
-                train_test_split(tr_data_i, tr_labels_i, validation_split, np.random.random())
-                for tr_data_i, tr_labels_i in zip(tr_data, tr_labels)
-            ]
+            seed = np.random.randint(np.iinfo(np.int32).max)
+            tr_x, val_x = tuple(map(list, zip(*[val_split(tr_i, validation_split, seed) for tr_i in tr_data])))
+            tr_y, val_y = tuple(map(list, zip(*[val_split(tr_i, validation_split, seed) for tr_i in tr_labels])))
         else:
             tr_x = tr_data
             tr_y = tr_labels
             val_x = val_data if isinstance(val_data, list) else [val_data]
             val_y = val_labels if isinstance(val_labels, list) else [val_labels]
         tensors = tensor_inputs + tensor_outputs
-        data = val_x + val_y
-        val_feed_dict = dict((t_i, v_i) for t_i, v_i in zip(tensors, data))
 
         # Preloop stuff
         n_batches = -(-len(tr_x[0]) / batch_size)
+        val_batches = -(-len(val_x[0]) / batch_size)
         no_improvement = 0
         print_headers(train_loss, train_acc, val_loss, val_acc)
 
@@ -246,9 +248,9 @@ class Model(object):
 
         for i in range(epochs):
             # Shuffle training data and prepare the variables to compute average loss/metric
-            idx = [np.random.permutation(len(tr_data_i)) for tr_data_i in tr_x]
-            x = [tr_data_i[idx_i, :] for tr_data_i, idx_i in zip(tr_x, idx)]
-            y = [tr_labels_i[idx_i, :] for tr_labels_i, idx_i in zip(tr_y, idx)]
+            idx = np.random.permutation(len(tr_x[0]))
+            x = [tr_data_i[idx, :] for tr_data_i in tr_x]
+            y = [tr_labels_i[idx, :] for tr_labels_i in tr_y]
             acc_sum = 0
             loss_sum = 0
 
@@ -279,8 +281,19 @@ class Model(object):
             # Epoch loss/metric computation
             train_loss['train_loss'][1] = loss_sum / n_batches
             train_acc['train_acc'][1] = acc_sum / n_batches
-            val_loss['val_loss'][1] = Model.session.run(loss, feed_dict=val_feed_dict)
-            val_acc['val_acc'][1] = Model.session.run(metrics, feed_dict=val_feed_dict)
+
+            val_loss_sum = 0
+            val_acc_sum = 0
+            for step in range(val_batches):
+                step_init = step * batch_size
+                step_end = step * batch_size + batch_size
+                data = val_x + val_y
+                val_feed_dict = dict((t_i, v_i[step_init:step_end, :]) for t_i, v_i in zip(tensors, data))
+                val_loss_sum += Model.session.run(loss, feed_dict=val_feed_dict)
+                val_acc_sum += Model.session.run(metrics, feed_dict=val_feed_dict)
+
+            val_loss['val_loss'][1] = val_loss_sum / val_batches
+            val_acc['val_acc'][1] = val_acc_sum / val_batches
             print_metrics(i, train_loss, train_acc, val_loss, val_acc, time.time() - t_in)
 
             # We check if there was improvement and update the best parameters accordingly. Also, if patience is
@@ -322,6 +335,7 @@ class Model(object):
             feed_dict = dict((t_i, v_i[step_init:step_end, :]) for t_i, v_i in zip(tensors, data))
             outputs.append([Model.session.run(output_i.output, feed_dict=feed_dict) for output_i in model_outputs])
 
-        return np.squeeze(np.concatenate(outputs, axis=1))
+        outputs = np.concatenate(outputs, axis=1)
+        return outputs[0] if len(outputs) == 1 else np.split(outputs, len(outputs.shape))
 
 
