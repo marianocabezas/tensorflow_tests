@@ -25,16 +25,14 @@ def color_codes():
     return codes
 
 
-def print_headers(train_losses, train_accs, val_losses, val_accs):
+def print_headers(other_accs=list()):
     print(''.join([' '] * 3), end='\t')
-    for (k, _) in train_losses.iteritems():
-        print(k, end='\t')
-    for (k, _) in train_accs.iteritems():
-        print(k, end='\t')
-    for (k, _) in val_losses.iteritems():
-        print(k, end='\t')
-    for (k, _) in val_accs.iteritems():
-        print(k, end='\t')
+    print('train_loss', end='\t')
+    print('train_acc ', end='\t')
+    print('val_loss  ', end='\t')
+    print('val_acc   ', end='\t')
+    for name in other_accs:
+            print(name, end='\t')
     print()
 
 
@@ -49,30 +47,22 @@ def print_metrics(i, train_losses, train_accs, val_losses, val_accs, time):
             metric[2] = i
             metric_s = color + metric_s + color_codes()['nc']
         print(metric_s, end='\t')
-        return is_better
 
     c = color_codes()
 
     # Structure of losses/acc:
     # 'name': (min/max, current, best_i)
-    metrics = zip(
-        sorted(train_losses.iteritems()),
-        sorted(train_accs.iteritems()),
-        sorted(val_losses.iteritems()),
-        sorted(val_accs.iteritems())
-    )
     print(''.join([' ']*130), end='\r')
     sys.stdout.flush()
-    better = None
     print('%03d' % i, end='\t')
-    for ((k_tl, v_tl), (k_ta, v_ta), (k_vl, v_vl), (k_va, v_va)) in metrics:
-        print_metric(i, v_tl, c['c'], True)
-        print_metric(i, v_ta, c['c'], False)
-        better = print_metric(i, v_vl, c['g'], True)
-        print_metric(i, v_va, c['g'], False)
-        print('%fs' % time)
-
-    return better
+    print_metric(i, train_losses['train_loss'], c['c'], True)
+    print_metric(i, train_accs['train_acc'], c['c'], False)
+    print_metric(i, val_losses['val_loss'], c['g'], True)
+    print_metric(i, val_accs['val_acc'], c['g'], False)
+    other_accs = dict((k, v) for k, v in val_accs.items() if k is not 'val_acc')
+    for v in other_accs.values():
+        print_metric(i, v, c['g'], False)
+    print('%fs' % time)
 
 
 def print_current(epoch, step, n_batches, curr_values):

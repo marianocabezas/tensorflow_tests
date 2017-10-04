@@ -119,9 +119,6 @@ def load_patch_batch_train(
         dfactor=10,
         datatype=np.float32,
         preload=False,
-        split=False,
-        iseg=False,
-        experimental=False,
 ):
     image_list = [load_norm_list(patient) for patient in image_names] if preload else image_names
     while True:
@@ -136,9 +133,6 @@ def load_patch_batch_train(
             datatype=datatype,
             dfactor=dfactor,
             preload=preload,
-            split=split,
-            iseg=iseg,
-            experimental=experimental
         )
         for x, y in gen:
             yield x, y
@@ -147,16 +141,14 @@ def load_patch_batch_train(
 def load_patches_train(
         image_names,
         label_names,
-        centers,
+        batch_centers,
         size,
         fc_shape,
         nlabels,
-        dfactor=10,
         datatype=np.float32,
         preload=False,
 ):
     image_list = [load_norm_list(patient) for patient in image_names] if preload else image_names
-    batch_centers = np.random.permutation(centers)[::dfactor]
     x, y = get_xy(
         image_list,
         label_names,
@@ -180,9 +172,6 @@ def load_patch_batch_generator_train(
         nlabels,
         dfactor,
         preload=False,
-        split=False,
-        iseg=False,
-        experimental=False,
         datatype=np.float32
 ):
     # The following line is important to understand the goal of the down scaling factor.
@@ -203,9 +192,6 @@ def load_patch_batch_generator_train(
             fc_shape,
             nlabels,
             preload,
-            split,
-            iseg,
-            experimental,
             datatype
         )
         yield x, y

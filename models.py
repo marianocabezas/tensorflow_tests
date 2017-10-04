@@ -125,8 +125,6 @@ class Model(object):
         return tf.placeholder(tf.float32, tensor.output.get_shape().as_list())
 
     def __init__(self, inputs, outputs, optimizer, loss, metrics):
-        # TODO: Multiple inputs/outputs
-        # TODO: Checking if input is tensor if not create one for it
         self.inputs = inputs
         self.outputs = outputs
         self.loss = loss
@@ -194,7 +192,7 @@ class Model(object):
             patience=np.inf,
             monitor='val_acc'
     ):
-        # TODO: Adapt it to multiple inputs/outputs while also changing the names of multiple metrics and losses
+        # TODO: Multiple metrics
         # TODO: Checking if input is tensor if not create one for it
         # The multiple input/output stuff is finicky. In order to allow for multiple tensors, we assure that
         # both inputs and outputs are lists of either one or multiple tensors.
@@ -209,17 +207,24 @@ class Model(object):
 
         # Metrics/loss creation and optimizer. We also initialize the new variables created.
         loss_f = Model._metric_functions[self.loss]
-        loss = tf.add_n([loss_f(o_i_a.output, o_i_gt) for o_i_a, o_i_gt in zip(model_outputs, tensor_outputs)])
+        mid_losses = [loss_f(o_i_a.output, o_i_gt) for o_i_a, o_i_gt in zip(model_outputs, tensor_outputs)]
+        loss = tf.add_n(mid_losses)
         metric_f = Model._metric_functions[self.metrics]
-        metrics = tf.add_n([metric_f(o_i_a.output, o_i_gt) for o_i_a, o_i_gt in zip(model_outputs, tensor_outputs)])
+        mid_metrics = [metric_f(o_i_a.output, o_i_gt) for o_i_a, o_i_gt in zip(model_outputs, tensor_outputs)]
+        metrics = tf.reduce_mean(mid_metrics)
         optimizer = Model._optimizers[self.optimizer].minimize(loss)
         Model.initialise_vars()
 
         # Metrics/loss stuff for monitoring
-        train_loss = {'train_loss': [np.inf, np.inf, 0]}
-        train_acc = {'train_acc': [-np.inf, -np.inf, 0]}
-        val_loss = {'val_loss': [np.inf, np.inf, 0]}
-        val_acc = {'val_acc': [-np.inf, -np.inf, 0]}
+        acc_init = [-np.inf, -np.inf, 0]
+        loss_init = [np.inf, np.inf, 0]
+        train_loss = {'train_loss': list(loss_init)}
+        train_acc = {'train_acc': list(acc_init)}
+        val_loss = {'val_loss': list(loss_init)}
+        val_acc = {'val_acc': list(acc_init)}
+        other_acc_names = ['val_' + o_i.node.name + '_acc' for o_i in model_outputs] if len(model_outputs) > 1 else []
+        other_accs = [(acc_name, list(acc_init)) for acc_name in other_acc_names]
+        val_acc.update(dict(other_accs))
 
         metrics_dict = dict(chain.from_iterable(map(dict.items, [train_loss, train_acc, val_loss, val_acc])))
 
@@ -241,7 +246,7 @@ class Model(object):
         n_batches = -(-len(tr_x[0]) / batch_size)
         val_batches = -(-len(val_x[0]) / batch_size)
         no_improvement = 0
-        print_headers(train_loss, train_acc, val_loss, val_acc)
+        print_headers(dict(other_accs))
 
         # General timing
         t_start = time.time()
@@ -284,6 +289,7 @@ class Model(object):
 
             val_loss_sum = 0
             val_acc_sum = 0
+            other_val_acc_sum = [0]*len(other_acc_names)
             for step in range(val_batches):
                 step_init = step * batch_size
                 step_end = step * batch_size + batch_size
@@ -291,9 +297,13 @@ class Model(object):
                 val_feed_dict = dict((t_i, v_i[step_init:step_end, :]) for t_i, v_i in zip(tensors, data))
                 val_loss_sum += Model.session.run(loss, feed_dict=val_feed_dict)
                 val_acc_sum += Model.session.run(metrics, feed_dict=val_feed_dict)
+                other_val_acc_sum = [acc_sum_i + Model.session.run(metric_i, feed_dict=val_feed_dict)
+                                     for acc_sum_i, metric_i in zip(other_val_acc_sum, mid_metrics)]
 
             val_loss['val_loss'][1] = val_loss_sum / val_batches
             val_acc['val_acc'][1] = val_acc_sum / val_batches
+            for acc_i, val_acc_i in zip(other_acc_names, other_val_acc_sum):
+                val_acc[acc_i][1] = val_acc_i / val_batches
             print_metrics(i, train_loss, train_acc, val_loss, val_acc, time.time() - t_in)
 
             # We check if there was improvement and update the best parameters accordingly. Also, if patience is
@@ -335,7 +345,6 @@ class Model(object):
             feed_dict = dict((t_i, v_i[step_init:step_end, :]) for t_i, v_i in zip(tensors, data))
             outputs.append([Model.session.run(output_i.output, feed_dict=feed_dict) for output_i in model_outputs])
 
-        outputs = np.concatenate(outputs, axis=1)
-        return outputs[0] if len(outputs) == 1 else np.split(outputs, len(outputs.shape))
+        return [np.concatenate(o_i) for o_i in zip(*outputs)]
 
 

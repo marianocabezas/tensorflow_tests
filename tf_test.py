@@ -22,11 +22,11 @@ def parse_inputs():
     parser.add_argument('-k', '--kernel-size', dest='conv_width', nargs='+', type=int, default=3)
     parser.add_argument('-c', '--conv-blocks', dest='conv_blocks', type=int, default=4)
     parser.add_argument('-b', '--batch-size', dest='batch_size', type=int, default=512)
+    parser.add_argument('-B', '--batch-test-size', dest='test_size', type=int, default=32768)
     parser.add_argument('-d', '--dense-size', dest='dense_size', type=int, default=256)
     parser.add_argument('-D', '--down-factor', dest='dfactor', type=int, default=200)
     parser.add_argument('-n', '--num-filters', action='store', dest='n_filters', nargs='+', type=int, default=[32])
     parser.add_argument('-e', '--epochs', action='store', dest='epochs', type=int, default=10)
-    parser.add_argument('-E', '--epochs-repetition', action='store', dest='r_epochs', type=int, default=20)
     parser.add_argument('-q', '--queue', action='store', dest='queue', type=int, default=10)
     parser.add_argument('-v', '--validation-rate', action='store', dest='val_rate', type=float, default=0.25)
     parser.add_argument('-u', '--unbalanced', action='store_false', dest='balanced', default=True)
@@ -60,42 +60,59 @@ def get_names_from_path(options, train=True):
     return image_names, label_names
 
 
-def get_brats_net(input_shape, filters_list, kernel_size_list, dense_size, nlabels):
+def get_brats_nets(input_shape, filters_list, kernel_size_list, dense_size, nlabels):
     inputs = Input(shape=input_shape)
     conv = inputs
     for filters, kernel_size in zip(filters_list, kernel_size_list):
         conv = Conv(filters, kernel_size=(kernel_size,)*3, activation='relu', data_format='channels_first')(conv)
 
     full = Conv(dense_size, kernel_size=(1, 1, 1), data_format='channels_first', name='fc_dense', activation='relu')(conv)
-    full = Conv(nlabels, kernel_size=(1, 1, 1), data_format='channels_first', name='fc')(full)
+    full_roi = Conv(nlabels[0], kernel_size=(1, 1, 1), data_format='channels_first', name='fc_roi')(full)
+    full_sub = Conv(nlabels[1], kernel_size=(1, 1, 1), data_format='channels_first', name='fc_sub')(full)
 
-    rf = Concatenate(axis=1)([conv, full])
+    rf_roi = Concatenate(axis=1)([conv, full_roi])
+    rf_sub = Concatenate(axis=1)([conv, full_sub])
 
     rf_num = 1
-    while np.product(rf.shape[2:]) > 1:
-        rf = Conv(dense_size, kernel_size=(3, 3, 3), data_format='channels_first', name='rf_%d' % rf_num)(rf)
+    while np.product(rf_roi.shape[2:]) > 1:
+        rf_roi = Conv(dense_size, kernel_size=(3, 3, 3), data_format='channels_first', name='rf_roi%d' % rf_num)(rf_roi)
+        rf_sub = Conv(dense_size, kernel_size=(3, 3, 3), data_format='channels_first', name='rf_sub%d' % rf_num)(rf_sub)
         rf_num += 1
 
-    full = Reshape((nlabels, -1))(full)
-    full = Permute((2, 1))(full)
-    full_out = Activation('softmax', name='fc_out')(full)
+    full_roi = Reshape((nlabels[0], -1))(full_roi)
+    full_sub = Reshape((nlabels[1], -1))(full_sub)
+    full_roi = Permute((2, 1))(full_roi)
+    full_sub = Permute((2, 1))(full_sub)
+    full_roi_out = Activation('softmax', name='fc_roi_out')(full_roi)
+    full_sub_out = Activation('softmax', name='fc_sub_out')(full_sub)
 
-    combo = Concatenate(axis=1)([Flatten()(conv), Flatten()(rf)])
+    combo_roi = Concatenate(axis=1)([Flatten()(conv), Flatten()(rf_roi)])
+    combo_sub = Concatenate(axis=1)([Flatten()(conv), Flatten()(rf_sub)])
 
-    tumor = Dense(nlabels, activation='softmax', name='tumor')(combo)
+    tumor_roi = Dense(nlabels[0], activation='softmax', name='tumor_roi')(combo_roi)
+    tumor_sub = Dense(nlabels[1], activation='softmax', name='tumor_sub')(combo_sub)
 
-    outputs = [tumor, full_out]
-    # outputs = tumor
+    outputs_roi = [tumor_roi, full_roi_out]
 
-    net = Model(
+    net_roi = Model(
         inputs=inputs,
-        outputs=outputs,
+        outputs=outputs_roi,
         optimizer='adadelta',
         loss='categorical_cross_entropy',
         metrics='accuracy'
     )
 
-    return net
+    outputs_sub = [tumor_sub, full_sub_out]
+
+    net_sub = Model(
+        inputs=inputs,
+        outputs=outputs_sub,
+        optimizer='adadelta',
+        loss='categorical_cross_entropy',
+        metrics='accuracy'
+    )
+
+    return net_roi, net_sub
 
 
 def train_net(net, net_name, nlabels):
@@ -120,20 +137,24 @@ def train_net(net, net_name, nlabels):
     fc_shape = (fc_width,) * 3
 
     try:
-        net = load_model(net_name + '.mod')
+        net = load_model(net_name + '.md')
     except IOError:
-        for _ in range(options['r_epochs']):
-            train_centers = get_cnn_centers(train_data[:, 0], train_labels, balanced=balanced)
+        centers = np.random.permutation(get_cnn_centers(train_data[:, 0], train_labels, balanced=balanced))
+        print(' '.join([''] * 15) + c['g'] + 'Total number of centers = ' +
+              c['b'] + '(%d centers)' % (len(centers)) + c['nc'])
+        for i in range(dfactor):
+            print(' '.join([''] * 16) + c['g'] + 'Round ' +
+                  c['b'] + '%d' % (i + 1) + c['nc'] + c['g'] + '/%d' % dfactor + c['nc'])
+            batch_centers = centers[i::dfactor]
             print(' '.join([''] * 16) + c['g'] + 'Loading data ' +
-                  c['b'] + '(%d centers)' % (len(train_centers) / dfactor) + c['nc'])
+                  c['b'] + '(%d centers)' % (len(batch_centers)) + c['nc'])
             x, y = load_patches_train(
                 image_names=train_data,
                 label_names=train_labels,
-                centers=train_centers,
+                batch_centers=batch_centers,
                 size=patch_size,
                 fc_shape=fc_shape,
                 nlabels=nlabels,
-                dfactor=dfactor,
                 preload=preload,
             )
 
@@ -151,7 +172,7 @@ def test_net(net, p, outputname):
     options = parse_inputs()
     patch_width = options['patch_width']
     patch_size = (patch_width, patch_width, patch_width)
-    batch_size = options['batch_size']
+    batch_size = options['test_size']
     p_name = p[0].rsplit('/')[-2]
     patient_path = '/'.join(p[0].rsplit('/')[:-1])
     outputname_path = os.path.join(patient_path, outputname + '.nii.gz')
@@ -228,7 +249,6 @@ def brats_main():
     dfactor = options['dfactor']
     # Prepare the net hyperparameters
     epochs = options['epochs']
-    r_epochs = options['r_epochs']
     patch_width = options['patch_width']
     patch_size = (patch_width, patch_width, patch_width)
     dense_size = options['dense_size']
@@ -246,8 +266,8 @@ def brats_main():
     filters_s = 'n'.join(['%d' % nf for nf in filters_list])
     conv_s = 'c'.join(['%d' % cs for cs in kernel_size_list])
     ub_s = '.ub' if not balanced else ''
-    params_s = (ub_s, dfactor, patch_width, conv_s, filters_s, dense_size, epochs, r_epochs)
-    sufix = '%s.D%d.p%d.c%s.n%s.d%d.e%d.E%d.' % params_s
+    params_s = (ub_s, dfactor, patch_width, conv_s, filters_s, dense_size, epochs)
+    sufix = '%s.D%d.p%d.c%s.n%s.d%d.e%d' % params_s
     preload_s = ' (with ' + c['b'] + 'preloading' + c['nc'] + c['c'] + ')' if preload else ''
 
     print(c['c'] + '[' + strftime("%H:%M:%S") + '] ' + 'Starting training' + preload_s + c['nc'])
@@ -260,9 +280,13 @@ def brats_main():
 
     print(c['c'] + '[' + strftime("%H:%M:%S") + ']    ' + c['g'] + 'Creating and compiling the model ' + c['nc'])
     input_shape = (train_data.shape[1],) + patch_size
-    net = get_brats_net(input_shape, filters_list, kernel_size_list, dense_size, 2)
-    net_name = os.path.join(path, 'brats2017-roi.tf' + sufix)
-    train_net(net, net_name, 2)
+    net1, net2 = get_brats_nets(input_shape, filters_list, kernel_size_list, dense_size, [2, 5])
+
+    net_name1 = os.path.join(path, 'brats2017-roi.tf' + sufix)
+    train_net(net1, net_name1, 2)
+
+    net_name2 = os.path.join(path, 'brats2017-full.tf' + sufix)
+    train_net(net2, net_name2, 5)
 
     test_data, test_labels = get_names_from_path(options, False)
     dsc_results = list()
@@ -271,15 +295,15 @@ def brats_main():
         patient_path = '/'.join(p[0].rsplit('/')[:-1])
         print(c['c'] + '[' + strftime("%H:%M:%S") + ']  ' + c['nc'] + 'Case ' + c['c'] + c['b'] + p_name + c['nc'] +
               c['c'] + ' (%d/%d):' % (i + 1, len(test_data)) + c['nc'])
-        image_name = os.path.join(patient_path, p_name + 'tensorflow.test')
+        image_name = os.path.join(patient_path, p_name + '.tensorflow.test')
         try:
             image = load_nii(image_name + '.nii.gz').get_data()
         except IOError:
-            image = test_net(net, p, image_name)
+            image = test_net(net2, p, image_name)
 
         results = check_dsc(gt_name, image)
         dsc_string = c['g'] + '/'.join(['%f'] * len(results)) + c['nc']
-        print(''.join([' '] * 14) + c['c'] + c['b'] + p_name + c['nc'] + ' DSC: ' + dsc_string)
+        print(''.join([' '] * 14) + c['c'] + c['b'] + p_name + c['nc'] + ' DSC: ' + dsc_string % tuple(results))
 
         dsc_results.append(results)
 

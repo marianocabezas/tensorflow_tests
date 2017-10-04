@@ -281,7 +281,7 @@ class Conv(Layer):
             if self.rank == 2:
                 conv = tf.nn.bias_add(conv, self.b, data_format='NCHW')
             if self.rank == 3:
-                # As of Mar 2017, direct addition is significantly slower than
+                # As of March 2017, direct addition is significantly slower than
                 # bias_add when computing gradients. To use bias_add, we collapse Z
                 # and Y into a single dimension to obtain a 4D input tensor.
                 conv_shape = conv.get_shape().as_list()
