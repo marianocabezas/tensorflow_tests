@@ -67,7 +67,7 @@ def print_metrics(i, train_losses, train_accs, val_losses, val_accs, time):
 
 def print_current(epoch, step, n_batches, curr_values):
     percent = 20 * step / n_batches
-    bar = '[' + ''.join([' '] * percent) + '>' + ''.join(['-'] * (20 - percent)) + ']'
+    bar = '[' + ''.join(['.'] * percent) + '>' + ''.join(['-'] * (20 - percent)) + ']'
     curr_values_s = ' train_loss %f (%f) train_acc %f (%f)' % curr_values
     print('%03d\t(%d/%d) ' % (epoch, step, n_batches) + bar + curr_values_s, end='\r')
     sys.stdout.flush()
