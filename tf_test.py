@@ -45,7 +45,7 @@ def parse_inputs():
 def get_names_from_path(options, train=True):
     path = options['dir_train'] if train else options['dir_test']
 
-    directories= filter(os.path.isdir, [os.path.join(path, f) for f in os.listdir(path)])
+    directories = filter(os.path.isdir, [os.path.join(path, f) for f in os.listdir(path)])
     patients = sorted(directories)
 
     # Prepare the names
@@ -66,7 +66,13 @@ def get_brats_nets(input_shape, filters_list, kernel_size_list, dense_size, nlab
     for filters, kernel_size in zip(filters_list, kernel_size_list):
         conv = Conv(filters, kernel_size=(kernel_size,)*3, activation='relu', data_format='channels_first')(conv)
 
-    full = Conv(dense_size, kernel_size=(1, 1, 1), data_format='channels_first', name='fc_dense', activation='relu')(conv)
+    full = Conv(
+        dense_size,
+        kernel_size=(1, 1, 1),
+        data_format='channels_first',
+        name='fc_dense',
+        activation='relu'
+    )(conv)
     full_roi = Conv(nlabels[0], kernel_size=(1, 1, 1), data_format='channels_first', name='fc_roi')(full)
     full_sub = Conv(nlabels[1], kernel_size=(1, 1, 1), data_format='channels_first', name='fc_sub')(full)
 
@@ -319,7 +325,6 @@ def check_dsc(gt_name, image):
 
 
 def main():
-    # TODO: Basic Brats 2017 network like the #challenges2017 repository one
     c = color_codes()
     mnist = input_data.read_data_sets("MNIST_data/", one_hot=True)
 
@@ -339,7 +344,7 @@ def main():
         net = Model(x, y_conv, optimizer='adam', loss='categorical_cross_entropy', metrics='accuracy')
 
     print(c['c'] + '[' + strftime("%H:%M:%S") + '] ' + c['g'] + c['b'] + 'Original (MNIST)' + c['nc'] +
-         c['g'] + ' net ' + c['nc'] + c['b'] + '(%d parameters)' % net.count_trainable_parameters() + c['nc'])
+          c['g'] + ' net ' + c['nc'] + c['b'] + '(%d parameters)' % net.count_trainable_parameters() + c['nc'])
 
     net.fit(
         mnist.train.images,
@@ -356,4 +361,3 @@ def main():
 if __name__ == '__main__':
     # main()
     brats_main()
-
